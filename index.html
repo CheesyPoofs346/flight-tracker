@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simple Flight Tracker</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px system-ui, sans-serif; display: flex; height: 100vh; }
+  #side { width: 320px; display: flex; flex-direction: column; border-right: 1px solid #ccc; background: #fafafa; }
+  #controls { padding: 10px; border-bottom: 1px solid #ccc; display: grid; gap: 6px; }
+  #controls input, #controls select, #controls button { padding: 6px; font-size: 14px; width: 100%; }
+  #status { font-size: 12px; color: #555; }
+  #types { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-bottom: 1px solid #ccc; max-height: 110px; overflow: auto; }
+  .chip { border: 1px solid #888; border-radius: 12px; padding: 1px 8px; font-size: 12px; cursor: pointer; background: #fff; }
+  .chip.on { background: #0b6cff; color: #fff; border-color: #0b6cff; }
+  #list { flex: 1; overflow: auto; }
+  .row { padding: 6px 10px; border-bottom: 1px solid #e5e5e5; cursor: pointer; }
+  .row:hover { background: #eef4ff; }
+  .row b { font-size: 13px; }
+  .row small { color: #666; display: block; }
+  #map { flex: 1; }
+  .plane { font-size: 20px; line-height: 20px; text-align: center; }
+  .plane.mil { filter: hue-rotate(120deg); }
+  @media (max-width: 700px) { body { flex-direction: column-reverse; } #side { width: 100%; height: 50%; } }
+</style>
+</head>
+<body>
+<div id="side">
+  <div id="controls">
+    <select id="mode">
+      <option value="view">Planes in current map view</option>
+      <option value="mil">Military planes (worldwide)</option>
+    </select>
+    <input id="q" placeholder="Filter: 777, B77W, U2, F16, A320, callsign…" list="hints">
+    <datalist id="hints"></datalist>
+    <button id="refresh">Refresh now</button>
+    <div id="status">Loading…</div>
+  </div>
+  <div id="types"></div>
+  <div id="list"></div>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Data: adsb.lol free public API (no key). Returns ICAO type (t) + description (desc), incl. military.
+const API = 'https://api.adsb.lol/v2';
+const map = L.map('map').setView([39.5, -98.35], 6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap · data: adsb.lol', maxZoom: 18
+}).addTo(map);
+
+const $ = id => document.getElementById(id);
+const markers = L.layerGroup().addTo(map);
+let planes = [];
+
+async function load() {
+  $('status').textContent = 'Loading…';
+  try {
+    let url;
+    if ($('mode').value === 'mil') {
+      url = `${API}/mil`;
+    } else {
+      const c = map.getCenter();
+      const b = map.getBounds();
+      const nm = Math.min(250, Math.ceil(map.distance(c, b.getNorthEast()) / 1852));
+      url = `${API}/point/${c.lat.toFixed(4)}/${c.lng.toFixed(4)}/${nm}`;
+    }
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    planes = (data.ac || []).filter(p => p.lat != null && p.lon != null);
+    $('status').textContent = `${planes.length} aircraft · updated ${new Date().toLocaleTimeString()}` +
+      ($('mode').value === 'view' && map.getZoom() < 6 ? ' · zoom in to see more' : '');
+    render();
+  } catch (e) {
+    $('status').textContent = 'Error loading data: ' + e.message;
+  }
+}
+
+function matches(p, q) {
+  if (!q) return true;
+  const hay = [p.t, p.desc, p.flight, p.r, p.hex].filter(Boolean).join(' ').toLowerCase();
+  return q.toLowerCase().split(/[\s,]+/).filter(Boolean).some(w => hay.includes(w));
+}
+
+function render() {
+  const q = $('q').value.trim();
+  const shown = planes.filter(p => matches(p, q));
+
+  // type chips (counts from all loaded planes)
+  const counts = {};
+  planes.forEach(p => { if (p.t) counts[p.t] = (counts[p.t] || 0) + 1; });
+  const types = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  $('types').innerHTML = '';
+  types.forEach(([t, n]) => {
+    const el = document.createElement('span');
+    el.className = 'chip' + (q.toLowerCase() === t.toLowerCase() ? ' on' : '');
+    el.textContent = `${t} ${n}`;
+    el.onclick = () => { $('q').value = q.toLowerCase() === t.toLowerCase() ? '' : t; render(); };
+    $('types').appendChild(el);
+  });
+  $('hints').innerHTML = types.map(([t]) => `<option value="${t}">`).join('');
+
+  // map + list
+  markers.clearLayers();
+  shown.forEach(p => {
+    const mil = (p.dbFlags & 1) === 1;
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="plane ${mil ? 'mil' : ''}" style="transform:rotate(${(p.track || 0) - 45}deg)">✈️</div>`,
+      iconSize: [20, 20]
+    });
+    p._m = L.marker([p.lat, p.lon], { icon }).addTo(markers).bindPopup(popup(p));
+  });
+  $('list').innerHTML = '';
+  shown.sort((a, b) => (a.t || '~').localeCompare(b.t || '~')).forEach(p => {
+    const d = document.createElement('div');
+    d.className = 'row';
+    d.innerHTML = `<b>${(p.flight || p.r || p.hex).trim()}</b> · ${p.t || '?'}
+      <small>${p.desc || 'Unknown type'}</small>
+      <small>${alt(p)} · ${p.gs ? Math.round(p.gs) + ' kt' : '—'}</small>`;
+    d.onclick = () => { map.setView([p.lat, p.lon], Math.max(map.getZoom(), 8)); p._m.openPopup(); };
+    $('list').appendChild(d);
+  });
+}
+
+const alt = p => p.alt_baro === 'ground' ? 'on ground' : p.alt_baro != null ? p.alt_baro.toLocaleString() + ' ft' : '—';
+const popup = p => `<b>${(p.flight || '').trim() || p.hex}</b><br>${p.desc || p.t || 'Unknown'}${p.t ? ' (' + p.t + ')' : ''}
+  <br>Reg: ${p.r || '—'}<br>Alt: ${alt(p)}<br>Speed: ${p.gs ? Math.round(p.gs) + ' kt' : '—'}
+  ${(p.dbFlags & 1) ? '<br><b>Military</b>' : ''}`;
+
+$('q').addEventListener('input', render);
+$('refresh').onclick = load;
+$('mode').onchange = load;
+map.on('moveend', () => { if ($('mode').value === 'view') load(); });
+setInterval(load, 15000);
+load();
+</script>
+</body>
+</html>
