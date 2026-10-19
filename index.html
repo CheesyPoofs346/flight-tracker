@@ -47,16 +47,22 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // Data: adsb.lol free public API (no key). Returns ICAO type (t) + description (desc), incl. military.
-// Same v2 response format on all of these; tried in order until one allows browser (CORS) access.
-const PROXY = ''; // e.g. 'https://flights.yourname.workers.dev/v2' (see worker.js)
-const APIS = [...(PROXY ? [PROXY] : []), 'https://api.airplanes.live/v2', 'https://api.adsb.lol/v2', 'https://api.adsb.one/v2'];
+// Same v2 response format everywhere. Direct APIs usually block browsers (CORS), so a public
+// CORS relay is the fallback. Set PROXY to your own Cloudflare Worker (see worker.js) for reliability.
+const PROXY = ''; // e.g. 'https://flights.yourname.workers.dev/v2'
+const DIRECT = ['https://api.airplanes.live/v2', 'https://api.adsb.lol/v2'];
+const relay = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
 async function getAc(path) {
+  const urls = [...(PROXY ? [`${PROXY}/${path}`] : []), ...DIRECT.map(b => `${b}/${path}`),
+                ...DIRECT.map(b => relay(`${b}/${path}`))];
   let err;
-  for (const base of APIS) {
+  for (const u of urls) {
     try {
-      const r = await fetch(`${base}/${path}`);
+      const r = await fetch(u);
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      return await r.json();
+      const j = await r.json();
+      if (!Array.isArray(j.ac)) throw new Error('bad data');
+      return j;
     } catch (e) { err = e; }
   }
   throw err;
