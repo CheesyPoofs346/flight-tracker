@@ -55,7 +55,7 @@ const DIRECT = ['https://api.airplanes.live/v2', 'https://api.adsb.lol/v2'];
 const fi = path => 'https://opendata.adsb.fi/api/v2/' + path.replace(/^point\/([^/]+)\/([^/]+)\/(.+)$/, 'lat/$1/lon/$2/dist/$3');
 const relay = u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u);
 async function tryUrl(u) {
-  const r = await fetch(u, { signal: AbortSignal.timeout(8000) });
+  const r = await fetch(u, { signal: AbortSignal.timeout(5000) });
   if (!r.ok) throw new Error('HTTP ' + r.status);
   const j = await r.json();
   const ac = j.ac || j.aircraft;
@@ -68,6 +68,31 @@ function getAc(path) {
                 ...DIRECT.map(b => relay(`${b}/${path}`)), relay(fi(path))];
   return Promise.any(urls.map(tryUrl)).catch(() => { throw new Error('all data sources failed'); });
 }
+// Fallback: snapshot of US aircraft refreshed every ~5 min by GitHub Actions (same-origin, no CORS).
+let snapshotAge = null;
+async function getSnapshot(mode, center, nm) {
+  const r = await fetch('data.json?t=' + Math.floor(Date.now() / 60000));
+  if (!r.ok) throw new Error('no snapshot');
+  const j = await r.json();
+  snapshotAge = Math.round((Date.now() - j.now) / 60000);
+  const rad = Math.PI / 180;
+  const dist = (a, b, c, d) => { // nautical miles
+    const x = Math.sin((c - a) * rad / 2) ** 2 + Math.cos(a * rad) * Math.cos(c * rad) * Math.sin((d - b) * rad / 2) ** 2;
+    return 2 * 3440.065 * Math.asin(Math.sqrt(x));
+  };
+  const ac = [];
+  for (const p of j.ac) {
+    const dt = (Date.now() - j.now) / 1000 + (p.seen_pos || 0);
+    if (p.gs && p.track != null && p.alt_baro !== 'ground') { // move plane along its heading since the snapshot
+      const d = p.gs * dt / 3600 / 60; // degrees of latitude
+      p.lat += d * Math.cos(p.track * rad);
+      p.lon += d * Math.sin(p.track * rad) / Math.cos(p.lat * rad);
+    }
+    if (mode === 'mil' ? (p.dbFlags & 1) : dist(center.lat, center.lng, p.lat, p.lon) <= nm) ac.push(p);
+  }
+  return { ac };
+}
+
 const map = L.map('map').setView([39.5, -98.35], 6);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap · data: adsb.lol', maxZoom: 18
@@ -99,13 +124,14 @@ function locate() {
 async function load() {
   $('status').textContent = 'Loading…';
   try {
-    let url;
+    let url, center = null, radius = 0;
     if ($('mode').value === 'me') {
       if (!me && !(await locate())) {
         $('mode').value = 'view';
         $('status').textContent = 'Location unavailable (allow location access). Showing map view.';
         return load();
       }
+      center = { lat: me[0], lng: me[1] }; radius = MILES_200_NM;
       url = `point/${me[0].toFixed(4)}/${me[1].toFixed(4)}/${MILES_200_NM}`;
     } else if ($('mode').value === 'mil') {
       url = 'mil';
@@ -113,11 +139,16 @@ async function load() {
       const c = map.getCenter();
       const b = map.getBounds();
       const nm = Math.min(250, Math.ceil(map.distance(c, b.getNorthEast()) / 1852));
+      center = c; radius = nm;
       url = `point/${c.lat.toFixed(4)}/${c.lng.toFixed(4)}/${nm}`;
     }
-    const data = await getAc(url);
+    snapshotAge = null;
+    let data;
+    try { data = await getAc(url); }
+    catch (e) { data = await getSnapshot($('mode').value, center, radius); }
     planes = (data.ac || []).filter(p => p.lat != null && p.lon != null);
     $('status').textContent = `${planes.length} aircraft · updated ${new Date().toLocaleTimeString()}` +
+      (snapshotAge != null ? ` · snapshot ${snapshotAge} min old` : ' · live') +
       ($('mode').value === 'view' && map.getZoom() < 6 ? ' · zoom in to see more' : '');
     render();
   } catch (e) {
