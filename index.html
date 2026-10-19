@@ -30,6 +30,7 @@
 <div id="side">
   <div id="controls">
     <select id="mode">
+      <option value="me">Within 200 miles of me</option>
       <option value="view">Planes in current map view</option>
       <option value="mil">Military planes (worldwide)</option>
     </select>
@@ -55,12 +56,38 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const $ = id => document.getElementById(id);
 const markers = L.layerGroup().addTo(map);
 let planes = [];
+let me = null, meCircle = null;
+const MILES_200_NM = 174; // 200 statute miles
+
+function locate() {
+  return new Promise(res => {
+    if (!navigator.geolocation) return res(null);
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        me = [pos.coords.latitude, pos.coords.longitude];
+        if (meCircle) meCircle.remove();
+        meCircle = L.circle(me, { radius: 200 * 1609.34, color: '#0b6cff', weight: 1, fillOpacity: 0.03, interactive: false }).addTo(map);
+        L.circleMarker(me, { radius: 6, color: '#0b6cff', fillOpacity: 1 }).addTo(map).bindPopup('You are here');
+        map.fitBounds(meCircle.getBounds());
+        res(me);
+      },
+      () => res(null),
+      { timeout: 10000 });
+  });
+}
 
 async function load() {
   $('status').textContent = 'Loading…';
   try {
     let url;
-    if ($('mode').value === 'mil') {
+    if ($('mode').value === 'me') {
+      if (!me && !(await locate())) {
+        $('mode').value = 'view';
+        $('status').textContent = 'Location unavailable (allow location access). Showing map view.';
+        return load();
+      }
+      url = `${API}/point/${me[0].toFixed(4)}/${me[1].toFixed(4)}/${MILES_200_NM}`;
+    } else if ($('mode').value === 'mil') {
       url = `${API}/mil`;
     } else {
       const c = map.getCenter();
