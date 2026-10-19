@@ -47,7 +47,19 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 // Data: adsb.lol free public API (no key). Returns ICAO type (t) + description (desc), incl. military.
-const API = 'https://api.adsb.lol/v2';
+// Same v2 response format on all of these; tried in order until one allows browser (CORS) access.
+const APIS = ['https://api.airplanes.live/v2', 'https://api.adsb.lol/v2', 'https://api.adsb.one/v2'];
+async function getAc(path) {
+  let err;
+  for (const base of APIS) {
+    try {
+      const r = await fetch(`${base}/${path}`);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) { err = e; }
+  }
+  throw err;
+}
 const map = L.map('map').setView([39.5, -98.35], 6);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap · data: adsb.lol', maxZoom: 18
@@ -86,18 +98,16 @@ async function load() {
         $('status').textContent = 'Location unavailable (allow location access). Showing map view.';
         return load();
       }
-      url = `${API}/point/${me[0].toFixed(4)}/${me[1].toFixed(4)}/${MILES_200_NM}`;
+      url = `point/${me[0].toFixed(4)}/${me[1].toFixed(4)}/${MILES_200_NM}`;
     } else if ($('mode').value === 'mil') {
-      url = `${API}/mil`;
+      url = 'mil';
     } else {
       const c = map.getCenter();
       const b = map.getBounds();
       const nm = Math.min(250, Math.ceil(map.distance(c, b.getNorthEast()) / 1852));
-      url = `${API}/point/${c.lat.toFixed(4)}/${c.lng.toFixed(4)}/${nm}`;
+      url = `point/${c.lat.toFixed(4)}/${c.lng.toFixed(4)}/${nm}`;
     }
-    const r = await fetch(url);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
+    const data = await getAc(url);
     planes = (data.ac || []).filter(p => p.lat != null && p.lon != null);
     $('status').textContent = `${planes.length} aircraft · updated ${new Date().toLocaleTimeString()}` +
       ($('mode').value === 'view' && map.getZoom() < 6 ? ' · zoom in to see more' : '');
