@@ -48,7 +48,8 @@
 <script>
 // Data: adsb.lol free public API (no key). Returns ICAO type (t) + description (desc), incl. military.
 // Same v2 response format on all of these; tried in order until one allows browser (CORS) access.
-const APIS = ['https://api.airplanes.live/v2', 'https://api.adsb.lol/v2', 'https://api.adsb.one/v2'];
+const PROXY = ''; // e.g. 'https://flights.yourname.workers.dev/v2' (see worker.js)
+const APIS = [...(PROXY ? [PROXY] : []), 'https://api.airplanes.live/v2', 'https://api.adsb.lol/v2', 'https://api.adsb.one/v2'];
 async function getAc(path) {
   let err;
   for (const base of APIS) {
